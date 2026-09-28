@@ -5,6 +5,63 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] - 2026-09-28
+
+### Security
+
+- **Decrypted plaintext is no longer written world-readable.** `decrypt` staged
+  plaintext with `open(path, 'wb')`, so the staging file inherited the process
+  umask (typically `0644`) and `os.replace` carried that mode onto the finished
+  output. Every local user could therefore read decrypted secrets, even though
+  the container and the keyfile were correctly `0600`. In the non-`--force` path
+  this also silently discarded the `0600` that `safe_open_write` had just
+  applied. The staging file is now created with `O_CREAT | O_EXCL` and mode
+  `0600`, and the mode is re-asserted after the atomic replace.
+- `decrypt_file` no longer leaks a failure oracle. A malformed salt escaped the
+  generic error handling as `"Salt must be 32 bytes"`, because `kdf.derive_key`
+  is called outside the surrounding `try`. That let an attacker distinguish a
+  corrupt container from a wrong password — reopening the oracle the 2.1.0
+  generic-error policy was introduced to close. Salt, nonce and tag lengths are
+  now validated before key derivation, matching `decrypt_stream`.
+- Windows keyfiles are no longer briefly exposed. `icacls` was invoked *after*
+  the secret bytes were written, leaving a window in which the keyfile was
+  readable under the inherited directory ACL. ACLs are now applied before any
+  key material is written, and an insecure keyfile is removed if that fails.
+- `_same_file()` no longer fails open. It returned `True` when `st_ino` was `0`,
+  which the symlink/TOCTOU checks interpret as "the path is unmodified"; on a
+  filesystem reporting `st_ino == 0` that silently disabled the protection. It
+  now fails closed. `st_ino` is populated on Linux, macOS and Windows, so
+  normal operation is unaffected.
+
+### Added
+
+- Bounded-memory streaming encryption and decryption for large files
+  (`encrypt_stream` / `decrypt_stream`, chunked AES-GCM via `StreamEncryptor`
+  and `StreamDecryptor`, plus an incremental JSON container parser). Memory use
+  is now independent of input size.
+- Output-overwrite protection: `encrypt` and `decrypt` now refuse to clobber an
+  existing output file. Pass `-f` / `--force` to overwrite.
+- Password policy is now defined in a single place (`config.py`) and consumed
+  from there, replacing duplicated literals.
+
+### Changed
+
+- `safe_open_write` was extracted into a shared internal helper
+  (`_util.safe_open_write`) used by both the CLI and keyfile generation, and its
+  path-containment checks were hardened against TOCTOU symlink races.
+- Keyfile permissions are now enforced on Windows via `icacls` (NTFS ACLs) in
+  addition to the existing POSIX `chmod`.
+- The minimum pytest version required for development was bumped.
+
+### Fixed
+
+- Removed a misleading "key wipe" in the encrypt/decrypt paths. The previous
+  `key = bytes(config.AES_KEY_LEN)` idiom only rebound the local name — `bytes`
+  is immutable, so it allocated a fresh zero-filled object and left the original
+  key bytes in the heap while the comment claimed to overwrite them. The code
+  now documents the actual limitation rather than asserting a guarantee it
+  cannot provide.
+
 ## [2.1.3] - 2026-09-10
 
 ### Fixed

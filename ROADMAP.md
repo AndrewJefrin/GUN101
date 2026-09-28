@@ -4,7 +4,7 @@ This roadmap describes what GUN-101 intends to do — and explicitly not do — 
 the next year. It is a living document; items may be reordered based on
 feedback, and anything here may evolve as issues are discussed.
 
-Last updated: 2026-09-10. Current release: 2.1.3.
+Last updated: 2026-09-28. Current release: 2.2.0.
 
 ## Goals for the next year
 
@@ -17,15 +17,20 @@ Last updated: 2026-09-10. Current release: 2.1.3.
   justified with measured time and memory numbers.
 - **Fuzzing harness.** Hypothesis-based property fuzz tests for container
   parsing (`tests/test_fuzz_parser.py`) targeting `decrypt_file`.
+- **Bounded-memory streaming for large files.** Encrypt and decrypt without
+  loading the whole file into memory, so container size is no longer bounded by
+  RAM.
+- **Output-overwrite protection.** `encrypt` and `decrypt` refuse to replace an
+  existing output file unless `-f` / `--force` is given.
+- **Windows file-permission support for keyfiles.** `os.chmod(path, 0o600)` is
+  POSIX-only; keyfile permissions are now also enforced on Windows via NTFS
+  ACLs (`icacls`), applied before any key material is written.
 
 ### Near term (2–3 months)
 
 - **Co-maintainer for the project.** Recruit and onboard a second maintainer so
   the bus factor reaches 2 and releases can be cut if the current maintainer is
   unavailable (see [GOVERNANCE.md](GOVERNANCE.md)).
-- **Windows file-permission support for keyfiles.** `os.chmod(path, 0o600)` is
-  POSIX-only; add correct handling on Windows (NTFS ACLs or a documented,
-  tested fallback).
 
 ### Medium term (3–6 months)
 

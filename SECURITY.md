@@ -14,11 +14,12 @@ tools outlive individual releases — update to a supported version promptly.
 
 | Version  | Support status                                                          |
 | -------- | ---------------------------------------------------------------------- |
-| 2.1.x    | Fully supported. Receives security fixes in new patch releases.        |
+| 2.2.x    | Fully supported. Receives security fixes in new patch releases.        |
+| 2.1.x    | Maintained for critical security fixes only; users should upgrade.     |
 | 2.0.x    | Maintained for critical security fixes only; users should upgrade.     |
 | < 2.0    | End of life. No security fixes. Upgrade required.                      |
 
-The current release, **2.1.3**, is fully supported.
+The current release, **2.2.0**, is fully supported.
 
 ## Reporting a vulnerability
 
