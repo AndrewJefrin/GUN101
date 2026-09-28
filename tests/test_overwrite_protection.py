@@ -7,6 +7,7 @@ import argparse
 import contextlib
 import io
 import os
+import stat
 import subprocess
 import sys
 
@@ -490,3 +491,106 @@ class TestSubprocessCliOverwrite:
         assert res.returncode == 0
         with open("input.txt", "rb") as f:
             assert f.read() == b"original data"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+class TestDecryptedOutputPermissions:
+    """Regression: decrypted plaintext must not be world-readable.
+
+    decrypt() streams plaintext into a staging file and then os.replace()s it
+    into position. The staging file used to be created with open(path,'wb'),
+    so it inherited the process umask (typically 0o644) and os.replace carried
+    that mode onto the final output -- leaving decrypted secrets readable by
+    every local user, while the container and keyfile were correctly 0o600.
+    """
+
+    @staticmethod
+    def _run(workdir, argv, password="Str0ngP@ssw0rd!"):
+        env = dict(os.environ, GUN101_PASSWORD=password)
+        return subprocess.run(
+            [sys.executable, "-m", "gun101.cli", *argv],
+            cwd=str(workdir), env=env, capture_output=True, text=True,
+        )
+
+    def test_decrypted_output_is_owner_only(self, tmp_path):
+        (tmp_path / "input.txt").write_bytes(b"top secret plaintext")
+        assert self._run(tmp_path, ["encrypt", "input.txt"]).returncode == 0
+
+        res = self._run(tmp_path, ["decrypt", "input.txt.gun101", "--output", "out.txt"])
+        assert res.returncode == 0, res.stderr
+
+        mode = stat.S_IMODE(os.stat(tmp_path / "out.txt").st_mode)
+        assert mode == 0o600, f"expected 0o600, got {oct(mode)}"
+        assert not mode & 0o077, f"output readable by group/other: {oct(mode)}"
+
+    def test_decrypted_output_is_owner_only_with_force(self, tmp_path):
+        """The --force path bypasses safe_open_write() and must still be 0o600."""
+        (tmp_path / "input.txt").write_bytes(b"top secret plaintext")
+        assert self._run(tmp_path, ["encrypt", "input.txt"]).returncode == 0
+        (tmp_path / "out.txt").write_bytes(b"pre-existing")
+
+        res = self._run(tmp_path, ["decrypt", "input.txt.gun101", "--output", "out.txt", "--force"])
+        assert res.returncode == 0, res.stderr
+
+        mode = stat.S_IMODE(os.stat(tmp_path / "out.txt").st_mode)
+        assert mode == 0o600, f"expected 0o600, got {oct(mode)}"
+
+    def test_staging_file_is_not_world_readable_during_decryption(
+        self, workdir, env_password, monkeypatch
+    ):
+        """The staging file holds plaintext while it is being written.
+
+        Runs cli.decrypt in-process so the staging fd can be inspected directly;
+        a subprocess would hide it behind a separate interpreter.
+        """
+        (workdir / "input.txt").write_bytes(b"top secret plaintext")
+        out, err, exc = run_func(
+            cli.encrypt, make_arg(file="input.txt", keyfile=None, output=None, force=False)
+        )
+        assert exc is None, err
+
+        seen = {}
+        real_open = os.open
+
+        def spy_open(path, flags, mode=0o777, *a, **kw):
+            fd = real_open(path, flags, mode, *a, **kw)
+            if isinstance(path, (str, bytes)) and b".tmp." in (
+                path.encode() if isinstance(path, str) else path
+            ):
+                try:
+                    seen["path"] = path
+                    seen["mode"] = stat.S_IMODE(os.fstat(fd).st_mode)
+                    seen["requested"] = mode
+                except OSError:
+                    pass
+            return fd
+
+        monkeypatch.setattr(os, "open", spy_open)
+        out, err, exc = run_func(
+            cli.decrypt, make_arg(file="input.txt.gun101", keyfile=None, output="out.txt", force=False)
+        )
+
+        assert exc is None, err
+        assert "mode" in seen, "staging file was never observed"
+        assert seen["requested"] == 0o600, f"staging file requested mode {oct(seen['requested'])}"
+        assert not seen["mode"] & 0o077, f"staging file was {oct(seen['mode'])} while holding plaintext"
+
+    def test_failed_decryption_does_not_leave_plaintext_staging_file(
+        self, workdir, env_password, monkeypatch
+    ):
+        """A wrong password must not leave a readable staging file behind."""
+        (workdir / "input.txt").write_bytes(b"top secret plaintext")
+        out, err, exc = run_func(
+            cli.encrypt, make_arg(file="input.txt", keyfile=None, output=None, force=False)
+        )
+        assert exc is None, err
+
+        monkeypatch.setenv("GUN101_PASSWORD", "Wr0ngP@ssw0rd!")
+        out, err, exc = run_func(
+            cli.decrypt, make_arg(file="input.txt.gun101", keyfile=None, output="out.txt", force=False)
+        )
+
+        assert exc is not None
+        leftovers = [p.name for p in workdir.iterdir() if ".tmp." in p.name]
+        assert not leftovers, f"staging files left behind: {leftovers}"
+        assert not (workdir / "out.txt").exists()

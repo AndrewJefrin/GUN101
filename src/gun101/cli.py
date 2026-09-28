@@ -113,8 +113,17 @@ def decrypt(args):
     # release of unverified plaintext and ensure atomic replacement.
     temp_dir = os.path.dirname(os.path.abspath(output_path))
     temp_path = os.path.join(temp_dir, f".{os.path.basename(output_path)}.tmp.{os.urandom(8).hex()}")
+    # Create the staging file with 0o600 from the outset. Using open(...,'wb')
+    # would apply the process umask instead, leaving decrypted plaintext
+    # world-readable for the whole duration of decryption (and in the final
+    # output, since os.replace carries the source file's mode across).
     try:
-        temp_f = open(temp_path, 'wb')
+        temp_fd = os.open(
+            temp_path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0),
+            0o600,
+        )
+        temp_f = os.fdopen(temp_fd, "wb")
     except OSError as e:
         in_f.close()
         print(f"Error writing output file: {e}", file=sys.stderr)
@@ -129,6 +138,10 @@ def decrypt(args):
                 pass
             output_reserved = True
         os.replace(temp_path, output_path)
+        # os.replace preserves the source inode's mode, so the output inherits
+        # the staging file's 0o600. Re-assert it for filesystems that do not
+        # honour the mode passed to os.open().
+        os.chmod(output_path, 0o600)
     except FileExistsError as e:
         try:
             if os.path.exists(temp_path):
@@ -150,7 +163,7 @@ def decrypt(args):
             pass
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
-    except (OSError, Exception) as e:
+    except Exception as e:
         try:
             if os.path.exists(temp_path):
                 os.unlink(temp_path)

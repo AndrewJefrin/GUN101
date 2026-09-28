@@ -59,9 +59,18 @@ def validate_safe_path(path) -> None:
 
 
 def _same_file(first, second):
-    return first.st_ino == 0 or second.st_ino == 0 or (
-        first.st_ino == second.st_ino and first.st_dev == second.st_dev
-    )
+    """Return True only when `first` and `second` provably name the same file.
+
+    Fails closed. The symlink/TOCTOU checks in `_validate_open_file` rely on a
+    True result meaning "the path still points at the file we opened". A
+    filesystem that reports ``st_ino == 0`` gives us no way to prove identity,
+    so treating that as a match would silently disable the protection instead
+    of surfacing an unverifiable state. On Linux, macOS and Windows ``st_ino``
+    is populated, so this does not affect normal operation.
+    """
+    if first.st_ino == 0 or second.st_ino == 0:
+        return False
+    return first.st_ino == second.st_ino and first.st_dev == second.st_dev
 
 
 def _validate_open_file(fd, path, previous_stat=None):

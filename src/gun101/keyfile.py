@@ -17,48 +17,40 @@ def _set_windows_permissions(path: str) -> None:
     """Set owner-only read/write permissions on Windows using icacls.
 
     Removes inherited permissions and grants read/write access solely
-    to the current user. If setting permissions fails, deletes the keyfile
-    and raises OSError.
+    to the current user.
     """
     try:
-        try:
-            username = getpass.getuser()
-        except Exception:
-            username = os.environ.get("USERNAME")
-
-        if not username:
-            raise OSError("Could not determine current user to set Windows keyfile permissions")
-
-        abs_path = os.path.abspath(path)
-        cmd = [
-            "icacls",
-            abs_path,
-            "/inheritance:r",
-            "/grant:r",
-            f"{username}:(R,W)",
-        ]
-        try:
-            # icacls is invoked directly with an argument list without a shell for Windows ACL configuration
-            result = subprocess.run(  # nosec B603
-                cmd,
-                capture_output=True,
-                text=True,
-                check=False,
-            )
-        except OSError as e:
-            raise OSError(f"Failed to execute icacls to secure keyfile: {e}") from None
-
-        if result.returncode != 0 or (
-            "Failed processing" in result.stdout and "Failed processing 0 files" not in result.stdout
-        ):
-            err_msg = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
-            raise OSError(f"Failed to set secure permissions on keyfile: {err_msg}")
+        username = getpass.getuser()
     except Exception:
-        try:
-            os.unlink(path)
-        except OSError:
-            pass
-        raise
+        username = os.environ.get("USERNAME")
+
+    if not username:
+        raise OSError("Could not determine current user to set Windows keyfile permissions")
+
+    abs_path = os.path.abspath(path)
+    cmd = [
+        "icacls",
+        abs_path,
+        "/inheritance:r",
+        "/grant:r",
+        f"{username}:(R,W)",
+    ]
+    try:
+        # icacls is invoked directly with an argument list without a shell for Windows ACL configuration
+        result = subprocess.run(  # nosec B603
+            cmd,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as e:
+        raise OSError(f"Failed to execute icacls to secure keyfile: {e}") from None
+
+    if result.returncode != 0 or (
+        "Failed processing" in result.stdout and "Failed processing 0 files" not in result.stdout
+    ):
+        err_msg = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
+        raise OSError(f"Failed to set secure permissions on keyfile: {err_msg}")
 
 
 def _is_windows() -> bool:
@@ -85,18 +77,30 @@ def generate_keyfile(path: str) -> None:
         raise ValueError(f"Key file already exists at {path}. "
                          "Delete it manually if you intend to replace it.")
     keyfile_bytes = os.urandom(config.KEYFILE_LEN)
+    windows = _is_windows()
+    file_created = False
     try:
         with safe_open_write(path) as f:
+            file_created = True
+            if windows:
+                _set_windows_permissions(path)
             f.write(keyfile_bytes)
     except OSError as e:
+        if file_created and windows:
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
+            except OSError as cleanup_error:
+                raise OSError(
+                    f"Error creating keyfile: {e}; failed to remove insecure keyfile: {cleanup_error}"
+                ) from None
         raise OSError(f"Error creating keyfile: {e}") from None
 
-    if _is_windows():
-        _set_windows_permissions(path)
-        os.chmod(path, 0o600)
-    else:
-        # Restrict permissions to owner read/write only
-        os.chmod(path, 0o600)
+    # The Windows ACLs were already applied above, before any secret bytes were
+    # written. Both platforms now need the same final step: on POSIX this sets
+    # owner-only read/write, on Windows it toggles the read-only attribute.
+    os.chmod(path, 0o600)
 
 def load_keyfile(path: str) -> bytes:
     """

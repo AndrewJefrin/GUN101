@@ -12,6 +12,20 @@ from typing import BinaryIO
 from . import cipher, config, kdf, keyfile
 
 
+def _discard_key(key: bytes) -> None:
+    """Drop the local reference to a derived key once it is no longer needed.
+
+    This deliberately does *not* claim to scrub the key from memory. CPython
+    ``bytes`` objects are immutable, so the previous idiom
+    ``key = bytes(config.AES_KEY_LEN)`` only rebound the name: it allocated a
+    new zero-filled object and left the original key bytes untouched in the
+    heap, while the comment asserted "Overwrite with zeros". Genuine scrubbing
+    would require holding the key in a mutable buffer and overwriting it before
+    release, which the current ``bytes``-based API cannot express.
+    """
+    del key
+
+
 def validate_password(password: str) -> None:
     """
     Validate password strength.
@@ -95,9 +109,8 @@ def encrypt_file(file_data: bytes, password: str, keyfile_path: str = None) -> b
     # Encrypt with associated data
     ciphertext, tag = cipher.encrypt(file_data, key, nonce, header_bytes)
 
-    # Step 6: Wipe key from memory (overwrite with zeros and delete reference)
-    key = bytes(config.AES_KEY_LEN)  # Overwrite with zeros
-    del key
+    # Step 6: Drop the local key reference
+    _discard_key(key)
 
     # Step 7: Build container (header + ciphertext + tag)
     container = header.copy()
@@ -164,6 +177,17 @@ def decrypt_file(container_data: bytes, password: str, keyfile_path: str = None)
     except (KeyError, ValueError, TypeError):
         raise ValueError("Decryption failed") from None
 
+    # Validate field lengths *before* key derivation. Without this a malformed
+    # container reaches kdf.derive_key()/cipher.decrypt(), whose own ValueError
+    # strings (e.g. "Salt must be 32 bytes") escape the generic-error handling
+    # below. That distinguishes a corrupt container from a wrong password and
+    # re-opens the oracle the v2.1.0 generic-error policy was meant to close.
+    # decrypt_stream() already enforces these lengths; keep both paths equal.
+    if (len(salt) != config.ARGON2_SALT_LEN
+            or len(nonce) != config.AES_NONCE_LEN
+            or len(tag) != 16):
+        raise ValueError("Decryption failed")
+
     # Step 6: Derive key
     key = kdf.derive_key(password, salt, keyfile_bytes)
 
@@ -185,9 +209,8 @@ def decrypt_file(container_data: bytes, password: str, keyfile_path: str = None)
         # Any error (invalid tag, wrong key, etc.) results in a generic error
         raise ValueError("Decryption failed") from None
     finally:
-        # Wipe key from memory
-        key = bytes(config.AES_KEY_LEN)  # Overwrite with zeros
-        del key
+        # Drop the local key reference
+        _discard_key(key)
 
     return plaintext
 
@@ -426,8 +449,7 @@ def encrypt_stream(
     header_bytes = header_json.encode("utf-8")
 
     encryptor = cipher.StreamEncryptor(key, nonce, header_bytes)
-    key = bytes(config.AES_KEY_LEN)
-    del key
+    _discard_key(key)
 
     prefix = (
         '{"protocol": '
@@ -550,8 +572,7 @@ def decrypt_stream(
             raise ValueError("Decryption failed")
 
     decryptor = cipher.StreamDecryptor(key, nonce, tag=tag, associated_data=header_bytes)
-    key = bytes(config.AES_KEY_LEN)
-    del key
+    _discard_key(key)
 
     try:
         for ct_chunk in ct_gen:

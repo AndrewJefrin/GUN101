@@ -471,6 +471,7 @@ class TestKeyfile:
         recorded_cmd = []
 
         def mock_run(cmd, **kwargs):
+            assert os.path.getsize(cmd[1]) == 0
             recorded_cmd.append((cmd, kwargs))
             return subprocess.CompletedProcess(
                 args=cmd,

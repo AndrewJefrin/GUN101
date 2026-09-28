@@ -3,6 +3,7 @@
 
 """Coverage for the validation branches of the crypto modules."""
 import base64
+import io
 import json
 import os
 
@@ -78,6 +79,12 @@ class TestHandlerValidation:
             handler.encrypt_file("text", "Str0ngP@ssw0rd!")
 
     def test_decrypt_file_rejects_altered_salt_length(self):
+        """A tampered salt must be rejected with the generic error.
+
+        Regression: decrypt_file() used to let kdf.derive_key()'s own
+        "Salt must be 32 bytes" message escape, which told an attacker the
+        container was corrupt rather than simply failing to authenticate.
+        """
         data = b"payload"
         password = "P" * 4 + "a" * 4 + "1" * 4 + "!"
 
@@ -85,8 +92,46 @@ class TestHandlerValidation:
         parsed = json.loads(container.decode())
         parsed["salt"] = base64.b64encode(b"short").decode()
         tampered = json.dumps(parsed).encode()
-        with pytest.raises(ValueError, match="Salt must be"):
+        with pytest.raises(ValueError, match="^Decryption failed$"):
             handler.decrypt_file(tampered, password)
+
+    @pytest.mark.parametrize(
+        "field,value",
+        [
+            ("salt", b"short"),
+            ("salt", b"A" * 64),
+            ("nonce", b"nope"),
+            ("tag", b"t" * 4),
+        ],
+    )
+    def test_decrypt_file_malformed_fields_give_generic_error(self, field, value):
+        """No malformed field may leak a specific diagnostic from decrypt_file()."""
+        password = "P" * 4 + "a" * 4 + "1" * 4 + "!"
+        parsed = json.loads(handler.encrypt_file(b"payload", password).decode())
+        parsed[field] = base64.b64encode(value).decode()
+        with pytest.raises(ValueError, match="^Decryption failed$"):
+            handler.decrypt_file(json.dumps(parsed).encode(), password)
+
+    def test_decrypt_file_and_decrypt_stream_agree_on_malformed_input(self):
+        """Both code paths must reject malformed containers identically.
+
+        decrypt_stream() always used the generic message; decrypt_file() did not.
+        """
+        password = "P" * 4 + "a" * 4 + "1" * 4 + "!"
+        parsed = json.loads(handler.encrypt_file(b"payload", password).decode())
+
+        for field, value in (("salt", b"short"), ("nonce", b"nope"), ("tag", b"t" * 4)):
+            bad = json.loads(json.dumps(parsed))
+            bad[field] = base64.b64encode(value).decode()
+            raw = json.dumps(bad).encode()
+
+            with pytest.raises(ValueError) as file_exc:
+                handler.decrypt_file(raw, password)
+            with pytest.raises(ValueError) as stream_exc:
+                out = io.BytesIO()
+                handler.decrypt_stream(io.BytesIO(raw), out, password)
+
+            assert str(file_exc.value) == str(stream_exc.value) == "Decryption failed"
 
     def test_encrypt_key_material(self):
         """Sanity check: filling the SALT/KEY constants is internally consistent."""
