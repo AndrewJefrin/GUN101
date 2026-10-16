@@ -1,0 +1,41 @@
+name: Contribution Leaderboard
+on:
+  schedule:
+    - cron: '0 9 1 * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+  pull-requests: read
+jobs:
+  leaderboard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Build monthly summary
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh pr list --repo "$GH_REPO" --state merged --limit 1000 --json author,title,number,mergedAt > prs.json
+          python - <<'PY'
+          import json, os
+          from collections import Counter
+          from datetime import datetime, timezone, timedelta
+          prs=json.load(open('prs.json'))
+          now=datetime.now(timezone.utc)
+          month=(now.replace(day=1)-timedelta(days=1)).strftime('%Y-%m')
+          counts=Counter((p.get('author') or {}).get('login','unknown') for p in prs if (p.get('mergedAt') or '').startswith(month))
+          rows=sorted(counts.items(), key=lambda x:(-x[1],x[0].lower()))
+          out=['# Community Contribution Leaderboard', '', f'Month: {month}', '', 'Rank | Contributor | Merged PRs', '---:|---|---:']
+          out += [f'{i} | @{name} | {count}' for i,(name,count) in enumerate(rows,1)]
+          if not rows: out += ['— | No merged PRs recorded this month | 0']
+          out += ['', 'Generated automatically from merged pull requests. This measures quantity, not quality.']
+          open('LEADERBOARD.md','w').write('\n'.join(out)+'\n')
+          PY
+          existing=$(gh api "repos/$GH_REPO/contents/LEADERBOARD.md" --jq '.sha' 2>/dev/null || true)
+          content=$(base64 -w 0 LEADERBOARD.md)
+          if [[ -n "$existing" ]]; then
+            gh api --method PUT "repos/$GH_REPO/contents/LEADERBOARD.md" -f message="Update contribution leaderboard" -f content="$content" -f sha="$existing" >/dev/null
+          else
+            gh api --method PUT "repos/$GH_REPO/contents/LEADERBOARD.md" -f message="Add contribution leaderboard" -f content="$content" >/dev/null
+          fi

@@ -1,0 +1,26 @@
+name: Welcome First-Time PR Contributors
+on:
+  workflow_run:
+    workflows: [Contribution Checks]
+    types: [completed]
+permissions:
+  issues: write
+  pull-requests: read
+jobs:
+  welcome:
+    if: github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Welcome first-time contributor
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          prs=$(gh api "repos/$GH_REPO/commits/$HEAD_SHA/pulls" --jq '[.[] | select(.base.repo.full_name == env.GH_REPO)] | .[0].number // empty')
+          [[ -n "$prs" ]] || exit 0
+          author=$(gh pr view "$prs" --repo "$GH_REPO" --json author --jq '.author.login')
+          count=$(gh pr list --repo "$GH_REPO" --author "$author" --state all --limit 100 --json number --jq 'length')
+          [[ "$count" == "1" ]] || exit 0
+          gh pr comment "$prs" --repo "$GH_REPO" --body "Welcome @$author! Thanks for opening your first pull request. Please ensure the checks pass, link the related issue when applicable, and respond to review feedback. See CONTRIBUTING.md for project conventions."

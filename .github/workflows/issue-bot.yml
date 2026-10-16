@@ -1,0 +1,75 @@
+name: Community Issue Bot
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  issues: write
+
+concurrency:
+  group: issue-bot-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  command:
+    if: github.event.issue.pull_request == null && github.event.comment.user.type == 'User'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Process command
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ACTOR: ${{ github.event.comment.user.login }}
+          COMMENT_BODY: ${{ github.event.comment.body }}
+        run: |
+          set -euo pipefail
+          body="$(printf '%s' "$COMMENT_BODY" | tr -d '\r')"
+          reply() { gh issue comment "$ISSUE_NUMBER" --repo "$GH_REPO" --body "$1"; }
+          details="$(gh issue view "$ISSUE_NUMBER" --repo "$GH_REPO" --json title,state,assignees,labels,url)"
+          state="$(jq -r '.state' <<<"$details")"
+          assignees="$(jq -r '[.assignees[].login] | join(",")' <<<"$details")"
+          is_assignee="$(jq -r --arg actor "$ACTOR" '[.assignees[].login] | index($actor) != null' <<<"$details")"
+          case "$body" in
+            "/help")
+              reply "**Community bot commands**\n\n- \`/assign\` — claim an unassigned issue for yourself\n- \`/unassign\` — release your own assignment\n- \`/status\` — show issue status\n- \`/ready\` — mark your assigned issue ready for review\n- \`/extend 3d\` — request extra time (maximum 14d)\n- \`/claim queue\` — list unassigned issues labeled \`help wanted\`\n- \`/close\` — close an issue assigned to you\n\nCommands work on issues, not pull requests."
+              ;;
+            "/status")
+              reply "**Issue status**\n\n$(jq -r '"Title: " + .title + "\nState: " + .state + "\nAssignees: " + (if (.assignees|length)==0 then "none" else ([.assignees[].login] | join(", ")) end) + "\nLabels: " + (if (.labels|length)==0 then "none" else ([.labels[].name] | join(", ")) end) + "\nURL: " + .url' <<<"$details")"
+              ;;
+            "/assign")
+              if [[ "$state" != "OPEN" ]]; then reply "This issue is closed and cannot be claimed."; exit 0; fi
+              if [[ -n "$assignees" ]]; then reply "Already assigned to: $assignees. No changes made."; exit 0; fi
+              gh issue edit "$ISSUE_NUMBER" --repo "$GH_REPO" --add-assignee "$ACTOR"
+              reply "Assigned to @$ACTOR. Please comment with progress if work takes time."
+              ;;
+            "/unassign")
+              if [[ "$is_assignee" != "true" ]]; then reply "You can only release an issue assigned to you."; exit 0; fi
+              gh issue edit "$ISSUE_NUMBER" --repo "$GH_REPO" --remove-assignee "$ACTOR"
+              reply "@$ACTOR released this issue for other contributors."
+              ;;
+            "/ready")
+              if [[ "$is_assignee" != "true" ]]; then reply "Only an assignee can mark this issue ready for review."; exit 0; fi
+              gh label create "ready-for-review" --repo "$GH_REPO" --color "0E8A16" --description "Contributor says work is ready for review" --force >/dev/null
+              gh issue edit "$ISSUE_NUMBER" --repo "$GH_REPO" --add-label "ready-for-review"
+              reply "Marked **ready-for-review**. Please link your pull request if you have one."
+              ;;
+            "/claim queue")
+              queue="$(gh issue list --repo "$GH_REPO" --state open --label "help wanted" --limit 100 --json number,title,url,assignees --jq '[.[] | select(.assignees|length==0)] | .[:10] | map("- #\(.number) \(.title) — \(.url)") | if length==0 then "No unassigned issues labeled help wanted." else join("\n") end')"
+              reply "**Available issue queue**\n\n$queue\n\nClaim one by commenting \`/assign\` on its issue."
+              ;;
+            "/close")
+              if [[ "$is_assignee" != "true" ]]; then reply "Only an assigned contributor can close this issue with \`/close\`."; exit 0; fi
+              gh issue close "$ISSUE_NUMBER" --repo "$GH_REPO" --comment "Closed by @$ACTOR using /close."
+              ;;
+            /extend\ *)
+              duration="${body#"/extend "}"
+              if [[ "$is_assignee" != "true" ]]; then reply "Only an assignee can request extra time."; exit 0; fi
+              if [[ ! "$duration" =~ ^([1-9]|1[0-4])d$ ]]; then reply "Use \`/extend Nd\` with N from 1 to 14, for example \`/extend 3d\`. This records a request; a maintainer must approve it."; exit 0; fi
+              gh label create "extension-request" --repo "$GH_REPO" --color "FBCA04" --description "Contributor requested more time" --force >/dev/null
+              gh issue edit "$ISSUE_NUMBER" --repo "$GH_REPO" --add-label "extension-request"
+              reply "@$ACTOR requested an extension of $duration. A maintainer should confirm the new target date."
+              ;;
+            *) ;;
+          esac

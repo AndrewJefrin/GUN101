@@ -1,0 +1,22 @@
+name: Contribution Checks
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+permissions:
+  pull-requests: read
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check title and issue reference
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          set -euo pipefail
+          if (( ${#PR_TITLE} > 100 )); then echo "PR title must be 100 characters or fewer."; exit 1; fi
+          if (( ${#PR_BODY} < 20 )); then echo "PR description is too short; explain what changed and how it was tested."; exit 1; fi
+          if [[ ! "$PR_BODY" =~ ([Cc]loses|[Ff]ixes|[Rr]esolves)[[:space:]]+#[0-9]+ ]]; then
+            echo "::warning::Link the related issue in the PR description, e.g. Closes #123. GitHub will close it automatically when the PR merges into the default branch."
+          fi
+          echo "Contribution checks passed."

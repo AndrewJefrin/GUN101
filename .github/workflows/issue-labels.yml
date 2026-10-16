@@ -1,0 +1,28 @@
+name: Automatic Issue Labels
+on:
+  issues:
+    types: [opened, edited]
+permissions:
+  issues: write
+jobs:
+  label:
+    if: github.event.issue.pull_request == null
+    runs-on: ubuntu-latest
+    steps:
+      - name: Apply category labels from issue text
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TEXT: ${{ github.event.issue.title }} ${{ github.event.issue.body }}
+        run: |
+          set -euo pipefail
+          add_label() {
+            gh label create "$1" --repo "$GH_REPO" --color "$2" --description "$3" --force >/dev/null
+            gh issue edit "$ISSUE_NUMBER" --repo "$GH_REPO" --add-label "$1"
+          }
+          text="$(printf '%s' "$ISSUE_TEXT" | tr '[:upper:]' '[:lower:]')"
+          if [[ "$text" =~ documentation|readme|typo|docs ]]; then add_label documentation 0075ca "Documentation improvements"; fi
+          if [[ "$text" =~ bug|crash|error|broken|regression ]]; then add_label bug d73a4a "Something is not working"; fi
+          if [[ "$text" =~ linux|kernel|shell|bash|systemd|terminal ]]; then add_label linux 5319e7 "Linux-related issue"; fi
+          if [[ "$text" =~ beginner|first.issue|newcomer|easy.task ]]; then add_label "good first issue" 7057ff "Suitable for new contributors"; fi

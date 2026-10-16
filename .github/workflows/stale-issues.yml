@@ -1,0 +1,39 @@
+name: Stale Issue Manager
+on:
+  schedule:
+    - cron: '17 8 * * *'
+  workflow_dispatch:
+permissions:
+  issues: write
+concurrency:
+  group: stale-issue-manager
+  cancel-in-progress: false
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Warn or close inactive issues
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          gh label create stale --repo "$GH_REPO" --color "ededed" --description "No recent activity" --force >/dev/null
+          gh label create pinned --repo "$GH_REPO" --color "b60205" --description "Exclude from automated stale handling" --force >/dev/null
+          gh issue list --repo "$GH_REPO" --state open --limit 100 --json number,updatedAt,labels,assignees,title,url > issues.json
+          now=$(date -u +%s)
+          jq -c '.[]' issues.json | while read -r issue; do
+            number=$(jq -r '.number' <<<"$issue")
+            updated=$(date -d "$(jq -r '.updatedAt' <<<"$issue")" +%s)
+            age=$(( (now-updated)/86400 ))
+            labels=$(jq -r '[.labels[].name] | join(",")' <<<"$issue")
+            [[ ",$labels," == *,pinned,* ]] && continue
+            if [[ ",$labels," == *,stale,* ]]; then
+              if (( age >= 7 )); then
+                gh issue close "$number" --repo "$GH_REPO" --comment "Closing due to inactivity after the stale notice. Comment to reopen if this still matters."
+              fi
+            elif (( age >= 14 )); then
+              gh issue edit "$number" --repo "$GH_REPO" --add-label stale
+              gh issue comment "$number" --repo "$GH_REPO" --body "This issue has had no activity for 14 days. Please comment with an update within 7 days; otherwise it may be closed automatically. Add the \`pinned\` label to exclude an issue from this automation."
+            fi
+          done
